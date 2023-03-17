@@ -38,6 +38,7 @@ static inline int web_client_crock_socket(struct web_client *w) {
     return 0;
 }
 
+#ifdef ENABLE_HTTPS
 static inline void web_client_enable_wait_from_ssl(struct web_client *w, int bytes) {
     int ssl_err = SSL_get_error(w->ssl.conn, bytes);
     if (ssl_err == SSL_ERROR_WANT_READ)
@@ -49,6 +50,7 @@ static inline void web_client_enable_wait_from_ssl(struct web_client *w, int byt
         web_client_disable_ssl_wait_send(w);
     }
 }
+#endif
 
 static inline int web_client_uncrock_socket(struct web_client *w) {
 #ifdef TCP_CORK
