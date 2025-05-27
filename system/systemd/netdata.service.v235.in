@@ -1,22 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 [Unit]
-Description=Real time performance monitoring
+Description=Netdata, X-Ray Vision for your infrastructure!
 
 # append here other services you want netdata to wait for them to start
-After=network.target httpd.service squid.service nfs-server.service mysqld.service mysql.service named.service postfix.service chronyd.service
+After=network.target network-online.target nss-lookup.target
+Wants=network-online.target nss-lookup.target
 
 [Service]
+LogNamespace=netdata
 Type=simple
-User=@netdata_user_POST@
+User=root
 Group=netdata
-RuntimeDirectory=netdata
-CacheDirectory=netdata
-StateDirectory=netdata
-LogsDirectory=netdata
-RuntimeDirectoryMode=0775
-StateDirectoryMode=0755
-CacheDirectoryMode=0755
-LogsDirectoryMode=2750
 EnvironmentFile=-/etc/default/netdata
 ExecStart=@sbindir_POST@/netdata -D $EXTRA_OPTS
 

@@ -1,33 +1,34 @@
 #!/usr/bin/env bash
 # Package tree used for installing netdata on distribution:
-# << CentOS: [7] [8] >>
+# << CentOS: [7] [8] [9] >>
 
 set -e
 
 declare -a package_tree=(
+  bison
+  cmake
+  curl
+  elfutils-libelf-devel
+  findutils
+  flex
   gcc
   gcc-c++
-  make
-  autoconf
-  autoconf-archive
-  automake
-  libatomic
-  libtool
-  pkgconfig
-  cmake
-  zlib-devel
-  libuuid-devel
-  libmnl-devel
-  json-c-devel
-  libuv-devel
-  lz4-devel
-  openssl-devel
-  python3
-  elfutils-libelf-devel
   git
-  tar
-  curl
   gzip
+  json-c-devel
+  libatomic
+  libmnl-devel
+  libuuid-devel
+  libuv-devel
+  libyaml-devel
+  lz4-devel
+  make
+  openssl-devel
+  pkgconfig
+  python3
+  systemd-devel
+  tar
+  zlib-devel
 )
 
 os_version() {

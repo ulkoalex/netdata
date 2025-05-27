@@ -18,65 +18,20 @@ Makefile.in
 .*.swp
 *.old
 *.log
+!src/collectors/log2journal/tests.d/*.log
+!src/go/**/*.log
 *.pyc
 
-Makefile
-aclocal.m4
-autom4te.cache
-compile
-config.guess
-config.h
-config.status
-config.sub
-configure
-depcomp
-install-sh
-libtool
-ltmain.sh
-missing
-stamp-h1
 netdata.spec
 sha256sums.txt
 
-# netdata binaries
-netdata
-netdatacli
-!netdata/
 upload/
 artifacts/
 
-apps.plugin
-!apps.plugin/
-
-freeipmi.plugin
-!freeipmi.plugin/
-
-cups.plugin
-!cups.plugin/
-
-nfacct.plugin
-!nfacct.plugin/
-
-xenstat.plugin
-!xenstat.plugin/
-
-perf.plugin
-!perf.plugin/
-
-slabinfo.plugin
-!slabinfo.plugin/
-
-cgroup-network
-!cgroup-network/
-
 ebpf.plugin
-collectors/ebpf.plugin/reset_netdata_trace.sh
+src/collectors/ebpf.plugin/reset_netdata_trace.sh
 !ebpf.plugin/
-collectors/ebpf.plugin/includes/
-
-# protoc generated files
-*.pb.cc
-*.pb.h
+src/libnetdata/ebpf/includes/
 
 # installation artifacts
 packaging/installer/.environment.sh
@@ -86,9 +41,6 @@ packaging/installer/.environment.sh
 # netdata makeself downloads
 packaging/makeself/tmp/
 
-# Libbpf is always overwritten depending of kernel version
-packaging/libbpf.*
-
 # coverity
 cov-int/
 netdata-coverity-analysis.tgz
@@ -96,20 +48,13 @@ netdata-coverity-analysis.tgz
 
 .cproject/
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.default.json
 .project/
 .settings/
 README
 TODO.md
 TODO.txt
-
-web/gui/chart-info/
-web/gui/control.html
-web/gui/dashboard.js
-web/gui/datasource.css
-web/gui/gadget.xml
-web/gui/index_new.html
-web/gui/version.txt
 
 # related to karma/javascript/node
 /node_modules/
@@ -130,17 +75,15 @@ system/systemd/netdata-updater.service
 !system/systemd/netdata.service.in
 !system/systemd/netdata.service.*.in
 
-daemon/anonymous-statistics.sh
-daemon/get-kubernetes-labels.sh
-
-health/notifications/alarm-notify.sh
-claim/netdata-claim.sh
-collectors/tc.plugin/tc-qos-helper.sh
-collectors/charts.d.plugin/charts.d.plugin
-collectors/python.d.plugin/python.d.plugin
-collectors/ioping.plugin/ioping.plugin
-collectors/go.d.plugin
-web/netdata-switch-dashboard.sh
+src/health/notifications/alarm-notify.sh
+src/collectors/cgroups.plugin/cgroup-name.sh
+src/collectors/cgroups.plugin/cgroup-network-helper.sh
+src/collectors/tc.plugin/tc-qos-helper.sh
+src/collectors/charts.d.plugin/charts.d.plugin
+src/collectors/python.d.plugin/python.d.plugin
+src/collectors/ioping.plugin/ioping.plugin
+src/collectors/go.d.plugin
+src/web/netdata-switch-dashboard.sh
 
 # installer generated files
 /netdata-uninstaller.sh
@@ -162,16 +105,14 @@ compile_commands.json
 webcopylocal*
 
 # converted diagrams
-diagrams/*.png
-diagrams/*.svg
-diagrams/*.atxt
-diagrams/plantuml.jar
-
-# cppcheck
-cppcheck-build/
+docs/diagrams/*.png
+docs/diagrams/*.svg
+docs/diagrams/*.atxt
+docs/diagrams/plantuml.jar
 
 # python virtual environment
 venv/
+.python-version
 
 # debugging / profiling
 makeself/debug/
@@ -193,6 +134,7 @@ tests/acls/acl.sh
 tests/urls/request.sh
 tests/alarm_repetition/alarm.sh
 tests/template_dimension/template_dim.sh
+tests/ebpf/ebpf_thread_function.sh
 aclk/legacy/tests/install-fake-charts.d.sh
 
 # tests and temp files
@@ -225,14 +167,33 @@ Session.*.vim
 
 # Special exceptions
 !packaging/repoconfig/Makefile
+packaging/windows/resources/*.manifest
 
 # Jupyter notebook checkpoints
 .ipynb_checkpoints
 
-# Judy stuff
-JudyLTables.c
-judyltablesgen
+# gorilla benchmark & fuzz binaries
+src/libnetdata/gorilla/gorilla_benchmark
+src/libnetdata/gorilla/gorilla_fuzzer
+src/libnetdata/gorilla/fuzz-*.log
 
-# m4 generated ksys
-database/engine/journalfile_v2.ksy
-database/engine/journalfile_v2_virtmemb.ksy
+# ignore build/ directory (default dir for many IDEs/LSPs)
+build/
+
+# ignore rules for go plugin code
+src/go/plugin/go.d/bin/
+src/go/plugin/go.d/vendor
+
+# ignore files used with msi installer
+packaging/windows/*.msi
+
+# agent-events build artifacts and test files
+packaging/tools/agent-events/agent-events
+packaging/tools/agent-events/expected_metrics.txt
+packaging/tools/agent-events/cf_patch.txt
+packaging/tools/agent-events/parseBehaviorTest.go
+packaging/tools/agent-events/server
+packaging/tools/agent-events/go.mod
+packaging/tools/agent-events/go.sum
+
+**/.claude/settings.local.json

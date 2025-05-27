@@ -1,12 +1,3 @@
-<!--
-title: "Install Netdata with Docker"
-custom_edit_url: "https://github.com/netdata/netdata/edit/master/packaging/docker/README.md"
-sidebar_label: "Docker"
-learn_status: "Published"
-learn_rel_path: "Installation/Installation methods"
-sidebar_position: 40
--->
-
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
@@ -14,219 +5,91 @@ import TabItem from '@theme/TabItem';
 
 ## Limitations running the Agent in Docker
 
-For monitoring the whole host, running the Agent in a container can limit its capabilities. Some data, like the host OS
-performance or status, is not accessible or not as detailed in a container as when running the Agent directly on the
-host.
+We don’t officially support using Docker’s `--user` option or Docker Compose’s `user:` parameter with our images. While they may work, some features could be unavailable. The Agent drops privileges at startup, so most processes don’t run as UID 0 even without these options.  
 
-A way around this is to provide special mounts to the Docker container so that the Agent can get visibility on host OS
-information like `/sys` and `/proc` folders or even `/etc/group` and shadow files.
-
-Also, we now ship Docker images using an [ENTRYPOINT](https://docs.docker.com/engine/reference/builder/#entrypoint)
-directive, not a COMMAND directive. Please adapt your execution scripts accordingly. You can find more information about
-ENTRYPOINT vs COMMAND in the [Docker
-documentation](https://docs.docker.com/engine/reference/builder/#understand-how-cmd-and-entrypoint-interact).
-
-Our POWER8+ Docker images do not support our FreeIPMI collector. This is a technical limitation in FreeIPMI itself,
-and unfortunately not something we can realistically work around.
+Additionally, our **POWER8+ Docker images** don’t support the **FreeIPMI collector** due to a technical limitation in FreeIPMI itself, which we can’t work around.
 
 ## Create a new Netdata Agent container
 
-You can create a new Agent container using either `docker run` or `docker-compose`. After using either method, you can
-visit the Agent dashboard `http://NODE:19999`.
+You can create a new Agent container with `docker run` or `docker-compose`, then access the dashboard at `http://NODE:19999`.  
 
-Both methods create a [bind mount](https://docs.docker.com/storage/bind-mounts/) for Netdata's configuration files
-_within the container_ at `/etc/netdata`. See the [configuration section](#configure-agent-containers) for details. If
-you want to access the configuration files from your _host_ machine, see [host-editable
-configuration](#host-editable-configuration).
+The Netdata container requires specific **privileges** and **mounts** to provide full monitoring capabilities equivalent to a direct host installation. Below is a list of required components and their purposes.
+
+<details open>
+<summary>Privileges</summary>
+
+|       Component       |          Privileges           | Description                                                                                                              |
+|:---------------------:|:-----------------------------:|--------------------------------------------------------------------------------------------------------------------------|
+|    cgroups.plugin     |   host PID mode, SYS_ADMIN    | Container network interfaces monitoring. Map virtual interfaces in the system namespace to interfaces inside containers. |
+|      proc.plugin      |       host network mode       | Host system networking stack monitoring.                                                                                 |
+|      go.d.plugin      |       host network mode       | Monitoring applications running on the host and inside containers.                                                       |
+|    local-listeners    | host network mode, SYS_PTRACE | Discovering local services/applications. Map open (listening) ports to running services/applications.                    |
+| network-viewer.plugin | host network mode, SYS_ADMIN  | Discovering all current network sockets and building a network-map.                                                      |
+
+</details>
+
+<details open>
+<summary>Mounts</summary>
+
+|       Component        |           Mounts           | Description                                                                                                                                      |
+|:----------------------:|:--------------------------:|--------------------------------------------------------------------------------------------------------------------------------------------------|
+|        netdata         |      /etc/os-release       | Host info detection.                                                                                                                             |
+|    diskspace.plugin    |             /              | Host mount points monitoring.                                                                                                                    |
+|     cgroups.plugin     | /sys, /var/run/docker.sock | Docker containers monitoring and name resolution.                                                                                                |
+|      go.d.plugin       |    /var/run/docker.sock    | Docker Engine and containers monitoring. See [docker](https://github.com/netdata/go.d.plugin/tree/master/modules/docker#readme) collector.       |
+|      go.d.plugin       |          /var/log          | Web servers logs tailing. See [weblog](https://github.com/netdata/go.d.plugin/tree/master/modules/weblog#readme) collector.                      |
+|      apps.plugin       |  /etc/passwd, /etc/group   | Monitoring of host system resource usage by each user and user group.                                                                            |
+|      proc.plugin       |           /proc            | Host system monitoring (CPU, memory, network interfaces, disks, etc.).                                                                           |
+| systemd-journal.plugin |          /var/log          | Viewing, exploring and analyzing systemd journal logs.                                                                                           |
+| systemd-journal.plugin |         /run/dbus          | Systemd-list-units function: information about all systemd units, including their active state, description, whether they are enabled, and more. |
+|      go.d.plugin       |         /run/dbus          | [go.d/systemdunits](https://github.com/netdata/go.d.plugin/tree/master/modules/systemdunits#readme)                                              |
+
+</details>
+
+### Recommended way
+
+Both methods create a [volume](https://docs.docker.com/storage/volumes/) for Netdata's configuration files
+_within the container_ at `/etc/netdata`.
+See the [configure section](#configure-agent-containers) for details. If you want to access the configuration files from your _host_ machine, see [host-editable configuration](#with-host-editable-configuration).
 
 <Tabs>
 <TabItem value="docker_run" label="docker run">
 
 <h3> Using the <code>docker run</code> command </h3>
 
-Run the following command along with the following options on your terminal, to start a new container.
+Run the following command in your terminal to start a new container.
 
 ```bash
 docker run -d --name=netdata \
-  -p 19999:19999 \
+  --pid=host \
+  --network=host \
   -v netdataconfig:/etc/netdata \
   -v netdatalib:/var/lib/netdata \
   -v netdatacache:/var/cache/netdata \
+  -v /:/host/root:ro,rslave \
   -v /etc/passwd:/host/etc/passwd:ro \
   -v /etc/group:/host/etc/group:ro \
+  -v /etc/localtime:/etc/localtime:ro \
   -v /proc:/host/proc:ro \
   -v /sys:/host/sys:ro \
   -v /etc/os-release:/host/etc/os-release:ro \
+  -v /var/log:/host/var/log:ro \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  -v /run/dbus:/run/dbus:ro \
   --restart unless-stopped \
   --cap-add SYS_PTRACE \
+  --cap-add SYS_ADMIN \
   --security-opt apparmor=unconfined \
   netdata/netdata
 ```
-
-> :bookmark_tabs: Note
->  
-> If you plan to Claim the node to Netdata Cloud, you can find the command with the right parameters by clicking the "Add Nodes" button in your Space's "Nodes" view.
 
 </TabItem>
 <TabItem value="docker compose" label="docker-compose">
 
 <h3> Using the <code>docker-compose</code> command</h3>
 
-#### Steps
-
-1. Copy the following code and paste into a new file called `docker-compose.yml`
-
-  ```yaml
-  version: '3'
-  services:
-    netdata:
-      image: netdata/netdata
-      container_name: netdata
-      hostname: example.com # set to fqdn of host
-      ports:
-        - 19999:19999
-      restart: unless-stopped
-      cap_add:
-        - SYS_PTRACE
-      security_opt:
-        - apparmor:unconfined
-      volumes:
-        - netdataconfig:/etc/netdata
-        - netdatalib:/var/lib/netdata
-        - netdatacache:/var/cache/netdata
-        - /etc/passwd:/host/etc/passwd:ro
-        - /etc/group:/host/etc/group:ro
-        - /proc:/host/proc:ro
-        - /sys:/host/sys:ro
-        - /etc/os-release:/host/etc/os-release:ro
-
-  volumes:
-    netdataconfig:
-    netdatalib:
-    netdatacache:
-  ```
-
-2. Run `docker-compose up -d` in the same directory as the `docker-compose.yml` file to start the container.
-
-> :bookmark_tabs: Note
->  
-> If you plan to Claim the node to Netdata Cloud, you can find the command with the right parameters by clicking the "Add Nodes" button in your Space's "Nodes" view.
-
-</TabItem>
-</Tabs>
-
-## Docker tags
-
-See our full list of Docker images at [Docker Hub](https://hub.docker.com/r/netdata/netdata).
-
-The official `netdata/netdata` Docker image provides the following named tags:
-
-* `stable`: The `stable` tag will always point to the most recently published stable build.
-* `edge`: The `edge` tag will always point ot the most recently published nightly build. In most cases, this is
-  updated daily at around 01:00 UTC.
-* `latest`: The `latest` tag will always point to the most recently published build, whether it’s a stable build
-  or a nightly build. This is what Docker will use by default if you do not specify a tag.
-
-Additionally, for each stable release, three tags are pushed, one with the full version of the release (for example,
-`v1.30.0`), one with just the major and minor version (for example, `v1.30`), and one with just the major version
-(for example, `v1`). The tags for the minor versions and major versions are updated whenever a release is published
-that would match that tag (for example, if `v1.30.1` were to be published, the `v1.30` tag would be updated to
-point to that instead of `v1.30.0`).
-
-## Adding extra packages at runtime
-
-By default, the official Netdata container images do not include a number of optional runtime dependencies. You
-can add these dependencies, or any other APK packages, at runtime by listing them in the environment variable
-`NETDATA_EXTRA_APK_PACKAGES`.
-
-Commonly useful packages include:
-
-- `apcupsd`: For monitoring APC UPS devices.
-- `libvirt-daemon`: For resolving cgroup names for libvirt domains.
-- `lm-sensors`: For monitoring hardware sensors.
-- `msmtp`: For email alert support.
-- `netcat-openbsd`: For IRC alert support.
-
-## Health Checks
-
-Our Docker image provides integrated support for health checks through the standard Docker interfaces.
-
-You can control how the health checks run by using the environment variable `NETDATA_HEALTHCHECK_TARGET` as follows:
-
--   If left unset, the health check will attempt to access the
-    `/api/v1/info` endpoint of the agent.
--   If set to the exact value 'cli', the health check
-    script will use `netdatacli ping` to determine if the agent is running
-    correctly or not. This is sufficient to ensure that Netdata did not
-    hang during startup, but does not provide a rigorous verification
-    that the daemon is collecting data or is otherwise usable.
--   If set to anything else, the health check will treat the value as a
-    URL to check for a 200 status code on. In most cases, this should
-    start with `http://localhost:19999/` to check the agent running in
-    the container.
-
-In most cases, the default behavior of checking the `/api/v1/info`
-endpoint will be sufficient. If you are using a configuration which
-disables the web server or restricts access to certain APIs, you will
-need to use a non-default configuration for health checks to work.
-
-## Configure Agent containers
-
-If you started an Agent container using one of the [recommended methods](#create-a-new-netdata-agent-container), and you
-want to edit Netdata's configuration, you must first use `docker exec` to attach to the container. Replace `netdata`
-with the name of your container.
-
-```bash
-docker exec -it netdata bash
-cd /etc/netdata
-./edit-config netdata.conf
-```
-
-You need to restart the Agent to apply changes. Exit the container if you haven't already, then use the `docker` command
-to restart the container: `docker restart netdata`.
-
-### Host-editable configuration
-
-> :warning: Warning
->  
-> The [edit-config](https://github.com/netdata/netdata/blob/master/docs/configure/nodes.md#the-netdata-config-directory) script doesn't work when executed on
-> the host system.
-
-If you want to make your container's configuration directory accessible from the host system, you need to use a
-[volume](https://docs.docker.com/storage/bind-mounts/) rather than a bind mount. The following commands create a
-temporary `netdata_tmp` container, which is used to populate a `netdataconfig` directory, which is then mounted inside
-the container at `/etc/netdata`.
-
-```bash
-mkdir netdataconfig
-docker run -d --name netdata_tmp netdata/netdata
-docker cp netdata_tmp:/etc/netdata netdataconfig/
-docker rm -f netdata_tmp
-```
-
-**`docker run`**: Use the `docker run` command, along with the following options, to start a new container. Note the
-changed `-v $(pwd)/netdataconfig/netdata:/etc/netdata \` line from the recommended example above.
-
-```bash
-docker run -d --name=netdata \
-  -p 19999:19999 \
-  -v $(pwd)/netdataconfig/netdata:/etc/netdata \
-  -v netdatalib:/var/lib/netdata \
-  -v netdatacache:/var/cache/netdata \
-  -v /etc/passwd:/host/etc/passwd:ro \
-  -v /etc/group:/host/etc/group:ro \
-  -v /proc:/host/proc:ro \
-  -v /sys:/host/sys:ro \
-  -v /etc/os-release:/host/etc/os-release:ro \
-  --restart unless-stopped \
-  --cap-add SYS_PTRACE \
-  --security-opt apparmor=unconfined \
-  netdata/netdata
-```
-
-**Docker Compose**: Copy the following code and paste into a new file called `docker-compose.yml`, then run
-`docker-compose up -d` in the same directory as the `docker-compose.yml` file to start the container. Note the changed
-`./netdataconfig/netdata:/etc/netdata:ro` line from the recommended example above.
+Create a file named `docker-compose.yml` in your project directory and paste the code below. From your project
+directory, start Netdata by running `docker-compose up -d`.
 
 ```yaml
 version: '3'
@@ -234,35 +97,430 @@ services:
   netdata:
     image: netdata/netdata
     container_name: netdata
-    hostname: example.com # set to fqdn of host
-    ports:
-      - 19999:19999
+    pid: host
+    network_mode: host
     restart: unless-stopped
     cap_add:
       - SYS_PTRACE
+      - SYS_ADMIN
     security_opt:
       - apparmor:unconfined
     volumes:
-      - ./netdataconfig/netdata:/etc/netdata:ro
+      - netdataconfig:/etc/netdata
       - netdatalib:/var/lib/netdata
       - netdatacache:/var/cache/netdata
+      - /:/host/root:ro,rslave
       - /etc/passwd:/host/etc/passwd:ro
       - /etc/group:/host/etc/group:ro
+      - /etc/localtime:/etc/localtime:ro
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /etc/os-release:/host/etc/os-release:ro
+      - /var/log:/host/var/log:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /run/dbus:/run/dbus:ro
+
+volumes:
+  netdataconfig:
+  netdatalib:
+  netdatacache:
+```
+
+</TabItem>
+</Tabs>
+
+> :bookmark_tabs: Note
+>
+> If you plan to connect the node to Netdata Cloud, you can find the command with the right parameters by clicking the "Add Nodes" button in your Space's "Nodes" view.
+
+### With NVIDIA GPUs monitoring
+
+Monitoring NVIDIA GPUs requires:
+
+- Using official [NVIDIA driver](https://www.nvidia.com/Download/index.aspx).
+- Installing [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+- Allowing the Netdata container to access GPU resources.
+
+<Tabs>
+<TabItem value="docker_run" label="docker run">
+
+<h3> Using the <code>docker run</code> command </h3>
+
+Add `--gpus 'all,capabilities=utility'` to your `docker run`.
+
+</TabItem>
+<TabItem value="docker compose" label="docker-compose">
+
+<h3> Using the <code>docker-compose</code> command</h3>
+
+Add the following to the netdata service.
+
+```yaml
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+```
+
+</TabItem>
+</Tabs>
+
+### With host-editable configuration
+
+Use a [bind mount](https://docs.docker.com/storage/bind-mounts/) for `/etc/netdata` rather than a volume.
+
+This example assumes that you’ve created `netdataconfig/` in your home directory.
+
+```bash
+mkdir netdataconfig
+```
+
+<Tabs>
+<TabItem value="docker_run" label="docker run">
+
+<h3> Using the <code>docker run</code> command </h3>
+
+Run the following command in your terminal to start a new container.
+
+```bash
+docker run -d --name=netdata \
+  --pid=host \
+  --network=host \
+  -v $(pwd)/netdataconfig/netdata:/etc/netdata \
+  -v netdatalib:/var/lib/netdata \
+  -v netdatacache:/var/cache/netdata \
+  -v /:/host/root:ro,rslave \
+  -v /etc/passwd:/host/etc/passwd:ro \
+  -v /etc/group:/host/etc/group:ro \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /proc:/host/proc:ro \
+  -v /sys:/host/sys:ro \
+  -v /etc/os-release:/host/etc/os-release:ro \
+  -v /var/log:/host/var/log:ro \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  --restart unless-stopped \
+  --cap-add SYS_PTRACE \
+  --cap-add SYS_ADMIN \
+  --security-opt apparmor=unconfined \
+  netdata/netdata
+```
+
+</TabItem>
+<TabItem value="docker compose" label="docker-compose">
+
+<h3> Using the <code>docker-compose</code> command</h3>
+
+Create a file named `docker-compose.yml` in your project directory and paste the code below. From your project
+directory, start Netdata by running `docker-compose up -d`.
+
+```yaml
+version: '3'
+services:
+  netdata:
+    image: netdata/netdata
+    container_name: netdata
+    pid: host
+    network_mode: host
+    restart: unless-stopped
+    cap_add:
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - ./netdataconfig/netdata:/etc/netdata
+      - netdatalib:/var/lib/netdata
+      - netdatacache:/var/cache/netdata
+      - /:/host/root:ro,rslave
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc/os-release:/host/etc/os-release:ro
+      - /var/log:/host/var/log:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
 
 volumes:
   netdatalib:
   netdatacache:
 ```
 
+</TabItem>
+</Tabs>
+
+### With SSL/TLS enabled HTTP Proxy
+
+Below is an example of installing Netdata with an **SSL reverse proxy** and **basic authentication** using Docker.  
+
+#### Caddyfile Setup
+
+Place the following `Caddyfile` in `/opt`, customizing the domain and adding your email for **Let’s Encrypt**. The certificate will renew automatically via the Caddy server.
+
+```caddyfile
+netdata.example.org {
+  reverse_proxy host.docker.internal:19999
+  tls admin@example.org
+}
+```
+
+#### docker-compose.yml
+
+After setting Caddyfile run this with `docker-compose up -d` to have a fully functioning Netdata setup behind an HTTP reverse
+proxy.
+
+Make sure Netdata bind to docker0 interface if you've custom `web.bind to` setting in `netdata.conf`.
+
+```yaml
+version: '3'
+services:
+  caddy:
+    image: caddy:2
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # To access netdata running with "network_mode: host".
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /opt/Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+  netdata:
+    image: netdata/netdata
+    container_name: netdata
+    pid: host
+    network_mode: host
+    restart: unless-stopped
+    cap_add:
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - netdataconfig:/etc/netdata
+      - netdatalib:/var/lib/netdata
+      - netdatacache:/var/cache/netdata
+      - /:/host/root:ro,rslave
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc/os-release:/host/etc/os-release:ro
+      - /var/log:/host/var/log:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+volumes:
+  caddy_data:
+  caddy_config:
+  netdataconfig:
+  netdatalib:
+  netdatacache:
+```
+
+#### Restrict access with basic auth
+
+You can restrict access by
+following the [official caddy guide](https://caddyserver.com/docs/caddyfile/directives/basicauth#basicauth) and adding lines
+to Caddyfile.
+
+### With Docker socket proxy
+
+> **Note:** Using Netdata with a Docker socket proxy may cause some features to not work as expected. It hasn't been fully tested by the Netdata team.
+
+For better security, deploy a **Docker socket proxy** with a tool like [HAProxy](/docs/netdata-agent/configuration/running-the-netdata-agent-behind-a-reverse-proxy/Running-behind-haproxy.md) or [CetusGuard](https://github.com/hectorm/cetusguard). This ensures the socket is **read-only** and restricted to the `/containers` endpoint.  
+
+Exposing the socket to a proxy is safer because Netdata’s TCP port is accessible outside the Docker network, while the proxy container remains isolated within it.
+
+#### HAProxy
+
+```yaml
+version: '3'
+services:
+  netdata:
+    image: netdata/netdata
+    container_name: netdata
+    pid: host
+    network_mode: host
+    restart: unless-stopped
+    cap_add:
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - netdataconfig:/etc/netdata
+      - netdatalib:/var/lib/netdata
+      - netdatacache:/var/cache/netdata
+      - /:/host/root:ro,rslave
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc/os-release:/host/etc/os-release:ro
+      - /var/log:/host/var/log:ro
+    environment:
+      - DOCKER_HOST=localhost:2375
+  proxy:
+    network_mode: host
+    image: tecnativa/docker-socket-proxy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - CONTAINERS=1
+
+volumes:
+  netdataconfig:
+  netdatalib:
+  netdatacache:
+```
+
+**Note:** Replace `2375` with the port of your proxy.
+
+#### CetusGuard
+
+> Note: This deployment method is supported by the community
+
+```yaml
+version: '3'
+services:
+  netdata:
+    image: netdata/netdata
+    container_name: netdata
+    pid: host
+    network_mode: host
+    restart: unless-stopped
+    cap_add:
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - netdataconfig:/etc/netdata
+      - netdatalib:/var/lib/netdata
+      - netdatacache:/var/cache/netdata
+      - /:/host/root:ro,rslave
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc/os-release:/host/etc/os-release:ro
+      - /var/log:/host/var/log:ro
+    environment:
+      - DOCKER_HOST=localhost:2375
+  cetusguard:
+    image: hectorm/cetusguard:v1
+    network_mode: host
+    read_only: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      CETUSGUARD_BACKEND_ADDR: unix:///var/run/docker.sock
+      CETUSGUARD_FRONTEND_ADDR: tcp://:2375
+      CETUSGUARD_RULES: |
+        ! Inspect a container
+        GET %API_PREFIX_CONTAINERS%/%CONTAINER_ID_OR_NAME%/json
+
+volumes:
+  netdataconfig:
+  netdatalib:
+  netdatacache:
+```
+
+You can run the socket proxy in its own Docker Compose file and leave it on a private network that you can add to
+other services that require access.
+
+### Rootless mode
+
+Netdata can be run successfully in a non-root environment, such as [rootless Docker](https://docs.docker.com/engine/security/rootless/).
+
+Netdata can run in a rootless Docker environment, but its data collection is limited due to restricted access to resources requiring elevated privileges. 
+The following components won't work:
+
+- container network interfaces monitoring (cgroup-network helper)
+- disk I/O and file descriptors of applications and processes (apps.plugin)
+- debugfs.plugin
+- freeipmi.plugin
+- perf.plugin
+- slabinfo.plugin
+- systemd-journal.plugin
+
+This method creates a [volume](https://docs.docker.com/storage/volumes/) for Netdata's configuration files
+_within the container_ at `/etc/netdata`.
+See the [configure section](#configure-agent-containers) for details. If you want to access the configuration files from your _host_ machine, see [host-editable configuration](#with-host-editable-configuration).
+
+<Tabs>
+<TabItem value="docker_run" label="docker run">
+
+<h3> Using the <code>docker run</code> command </h3>
+
+Run the following command in your terminal to start a new container.
+
+```bash
+docker run -d --name=netdata \
+  --hostname=$(hostname) \
+  -p 19999:19999 \
+  -v netdataconfig:/etc/netdata \
+  -v netdatalib:/var/lib/netdata \
+  -v netdatacache:/var/cache/netdata \
+  -v /etc/passwd:/host/etc/passwd:ro \
+  -v /etc/group:/host/etc/group:ro \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /proc:/host/proc:ro \
+  -v /sys:/host/sys:ro \
+  -v /etc/os-release:/host/etc/os-release:ro \
+  -v /run/user/$UID/docker.sock:/var/run/docker.sock:ro \
+  --restart unless-stopped \
+  --security-opt apparmor=unconfined \
+  netdata/netdata
+```
+
+</TabItem>
+
+</Tabs>
+
+> :bookmark_tabs: Note
+>
+> If you plan to connect the node to Netdata Cloud, you can find the command with the right parameters by clicking the "Add Nodes" button in your Space's "Nodes" view.
+
+## Docker tags
+
+See our full list of Docker images at [Docker Hub](https://hub.docker.com/r/netdata/netdata).
+
+The official `netdata/netdata` Docker image provides the following named tags:
+
+|   Tag    | Description                                                                                                                                             |
+|:--------:|---------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `stable` | the most recently published stable build.                                                                                                               |
+|  `edge`  | the most recently published nightly build. In most cases, this is updated daily at around 01:00 UTC.                                                    |
+| `latest` | the most recently published build, whether it’s a stable build or a nightly build. This is what Docker will use by default if you do not specify a tag. |
+| `vX.Y.Z` | the full version of the release (for example, `v1.40.0`).                                                                                               |
+|  `vX.Y`  | the major and minor version (for example, `v1.40`).                                                                                                     |
+|   `vX`   | just the major version (for example, `v1`).                                                                                                             |
+
+Minor and major version tags update with each matching release. For example, if `v1.40.1` is published, the `v1.40` tag moves from `v1.40.0` to `v1.40.1`.
+
+## Configure Agent Containers
+
+If you started an Agent container using one of the [recommended methods](#create-a-new-netdata-agent-container) and need to edit its configuration, first attach to the container with `docker exec`, replacing `netdata` with your container’s name.
+
+```bash
+docker exec -it netdata bash
+cd /etc/netdata
+./edit-config netdata.conf
+```
+
+Restart the Agent to apply changes: exit the container if necessary, then run `docker restart netdata`.
+
 ### Change the default hostname
 
-You can change the hostname of a Docker container, and thus the name that appears in the local dashboard and in Netdata
-Cloud, when creating a new container. If you want to change the hostname of a Netdata container _after_ you started it,
-you can safely stop and remove it. Your configuration and metrics data reside in persistent volumes and are reattached to
-the recreated container.
+A container’s hostname appears in both the local dashboard and Netdata Cloud.
+
+To change it after creation, stop and remove the container—it’s safe! Your configuration and metrics stay intact in persistent volumes and will reattach when you recreate the container.
 
 If you use `docker-run`, use the `--hostname` option with `docker run`.
 
@@ -281,253 +539,41 @@ services:
     image: netdata/netdata
     container_name: netdata
     hostname: my_docker_compose_netdata
-    ...
 ```
 
-If you don't want to destroy and recreate your container, you can edit the Agent's `netdata.conf` file directly. See the
-above section on [configuring Agent containers](#configure-agent-containers) to find the appropriate method based on
-how you created the container.
+If you prefer not to recreate the container, edit the Agent’s `netdata.conf` file. See [configuring Agent containers](#configure-agent-containers) for the right method based on how you created it.  
 
-Alternatively, you can directly use the hostname from the node running the container by mounting
-`/etc/hostname` from the host in the container. With `docker run`, this can be done by adding `--volume
-/etc/hostname:/etc/hostname:ro` to the options. If you are using Docker Compose, you can add an entry to the
-container's `volumes` section reading `- /etc/hostname:/etc/hostname:ro`.
+Alternatively, use the **host’s hostname** by mounting `/etc/hostname` in the container:  
 
-### Add or remove other volumes
+- **With `docker run`**, add:  
+  ```sh
+  --volume /etc/hostname:/host/etc/hostname:ro
+  ```  
+- **With Docker Compose**, add this to the `volumes` section:  
+  ```yaml
+  - /etc/hostname:/host/etc/hostname:ro
+  ```
 
-Some volumes are optional depending on how you use Netdata:
+## Adding extra packages at runtime
 
--   If you don't want to use the apps.plugin functionality, you can remove the mounts of `/etc/passwd` and `/etc/group`
-    (they are used to get proper user and group names for the monitored host) to get slightly better security.
--   Most modern linux distros supply `/etc/os-release` although some older distros only supply `/etc/lsb-release`. If
-    this is the case you can change the line above that mounts the file inside the container to
-    `-v /etc/lsb-release:/host/etc/lsb-release:ro`.
--   If your host is virtualized then Netdata cannot detect it from inside the container and will output the wrong
-    metadata (e.g. on `/api/v1/info` queries). You can fix this by setting a variable that overrides the detection
-    using, e.g. `--env VIRTUALIZATION=$(systemd-detect-virt -v)`. If you are using a `docker-compose.yml` then add:
+By default, Netdata’s official container images exclude some optional runtime dependencies. You can install them at runtime by setting the `NETDATA_EXTRA_DEB_PACKAGES` environment variable.
 
-```yaml
-    environment:
-      - VIRTUALIZATION=${VIRTUALIZATION}
-```
+Commonly useful packages:  
+- `apcupsd` – Monitors APC UPS devices.  
+- `lm-sensors` – Monitors hardware sensors.  
+- `netcat-openbsd` – Enables IRC alerts.
 
-This allows the information to be passed into `docker-compose` using:
+## Health Checks
 
-```bash
-VIRTUALIZATION=$(systemd-detect-virt -v) docker-compose up
-```
+Netdata’s Docker image supports **health checks** via standard Docker interfaces. You can control them using the `NETDATA_HEALTHCHECK_TARGET` environment variable:  
 
-#### Files inside systemd volumes
+- **Unset** – Defaults to checking `/api/v1/info`.  
+- **`cli`** – Uses `netdatacli ping` to confirm the Agent is running (but not full data collection).
 
-If a volume is used by systemd service, some files can be removed during 
-[reinitialization](https://github.com/netdata/netdata/issues/9916). To avoid this, you need to add
-`RuntimeDirectoryPreserve=yes` to the service file.
-
-### Docker container names resolution
-
-There are a few options for resolving container names within Netdata. Some methods of doing so will allow root access to
-your machine from within the container. Please read the following carefully.
-
-#### Docker socket proxy (safest option)
-
-Deploy a Docker socket proxy that accepts and filters out requests using something like
-[HAProxy](https://github.com/netdata/netdata/blob/master/docs/Running-behind-haproxy.md) so that it restricts connections to read-only access to the CONTAINERS
-endpoint.
-
-The reason it's safer to expose the socket to the proxy is because Netdata has a TCP port exposed outside the Docker
-network. Access to the proxy container is limited to only within the network.
-
-Below is [an example repository (and image)](https://github.com/Tecnativa/docker-socket-proxy) that provides a proxy to
-the socket.
-
-You run the Docker Socket Proxy in its own Docker Compose file and leave it on a private network that you can add to
-other services that require access.
-
-```yaml
-version: '3'
-services:
-  netdata:
-    image: netdata/netdata
-    # ... rest of your config ...
-    ports:
-      - 19999:19999
-    environment:
-      - DOCKER_HOST=proxy:2375
-  proxy:
-    image: tecnativa/docker-socket-proxy
-    volumes:
-     - /var/run/docker.sock:/var/run/docker.sock:ro
-    environment:
-      - CONTAINERS=1
-
-```
-**Note:** Replace `2375` with the port of your proxy.
-
-#### Giving group access to the Docker socket (less safe)
-
-> :warning: Caution
->  
-> You should seriously consider the necessity of activating this option, as it grants to the `netdata`
-> user access to the privileged socket connection of docker service and therefore your whole machine.
-
-If you want to have your container names resolved by Netdata, make the `netdata` user be part of the group that owns the
-socket.
-
-```yaml
-version: '3'
-services:
-  netdata:
-    image: netdata/netdata
-    # ... rest of your config ...
-    volumes:
-      # ... other volumes ...
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    environment:
-      - PGID=[GROUP NUMBER]
-```
-
-To achieve that just add environment variable `PGID=[GROUP NUMBER]` to the Netdata container, where `[GROUP NUMBER]` is
-practically the group id of the group assigned to the docker socket, on your host.
-
-This group number can be found by running the following (if socket group ownership is docker):
-
-```bash
-grep docker /etc/group | cut -d ':' -f 3
-```
-
-#### Running as root (unsafe)
-
-> :warning: Caution
->  
-> You should seriously consider the necessity of activating this option, as it grants to the `netdata` user access to
-> the privileged socket connection of docker service, and therefore your whole machine.
-
-```yaml
-version: '3'
-services:
-  netdata:
-    image: netdata/netdata
-    # ... rest of your config ...
-    volumes:
-      # ... other volumes ...
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    environment:
-      - DOCKER_USR=root
-```
-
-### Docker container network interfaces monitoring
-
-Netdata can map a virtual interface in the system namespace to an interface inside a Docker container
-when using network [bridge](https://docs.docker.com/network/bridge/) driver. To do this, the Netdata container needs
-additional privileges:
-
-- the host PID mode. This turns on sharing between container and the host operating system the PID
-  address space (needed to get list of PIDs from `cgroup.procs` file).
-
-- `SYS_ADMIN` capability (needed to execute `setns()`).
-
-**docker run**:
-
-```bash
-docker run -d --name=netdata \
-  ...
-  --pid=host \
-  --cap-add SYS_ADMIN \
-  ...
-  netdata/netdata
-```
-
-**docker compose**:
-
-```yaml
-version: '3'
-services:
-  netdata:
-    image: netdata/netdata
-    container_name: netdata
-    pid: host
-    cap_add:
-      - SYS_ADMIN
-    ...
-```
-
-### Pass command line options to Netdata
-
-Since we use an [ENTRYPOINT](https://docs.docker.com/engine/reference/builder/#entrypoint) directive, you can provide
-[Netdata daemon command line options](https://github.com/netdata/netdata/blob/master/daemon/README.md#command-line-options) such as the IP address Netdata will be
-running on, using the [command instruction](https://docs.docker.com/engine/reference/builder/#cmd). 
-
-## Install the Agent using Docker Compose with SSL/TLS enabled HTTP Proxy
-
-For a permanent installation on a public server, you should [secure the Netdata
-instance](https://github.com/netdata/netdata/blob/master/docs/netdata-security.md). This section contains an example of how to install Netdata with an SSL
-reverse proxy and basic authentication.
-
-You can use the following `docker-compose.yml` and Caddyfile files to run Netdata with Docker. Replace the domains and
-email address for [Let's Encrypt](https://letsencrypt.org/) before starting.
-
-### Caddyfile
-
-This file needs to be placed in `/opt` with name `Caddyfile`. Here you customize your domain, and you need to provide
-your email address to obtain a Let's Encrypt certificate. Certificate renewal will happen automatically and will be
-executed internally by the caddy server.
-
-```caddyfile
-netdata.example.org {
-  reverse_proxy netdata:19999
-  tls admin@example.org
-}
-```
-
-### docker-compose.yml
-
-After setting Caddyfile run this with `docker-compose up -d` to have fully functioning Netdata setup behind HTTP reverse
-proxy.
-
-```yaml
-version: '3'
-volumes:
-  caddy_data:
-  caddy_config:
-
-services:
-  caddy:
-    image: caddy:2
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - /opt/Caddyfile:/etc/caddy/Caddyfile
-      - caddy_data:/data
-      - caddy_config:/config
-  netdata:
-    restart: always
-    hostname: netdata.example.org
-    image: netdata/netdata
-    cap_add:
-      - SYS_PTRACE
-    security_opt:
-      - apparmor:unconfined
-    volumes:
-      - netdatalib:/var/lib/netdata
-      - netdatacache:/var/cache/netdata
-      - /etc/passwd:/host/etc/passwd:ro
-      - /etc/group:/host/etc/group:ro
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-
-volumes:
-  netdatalib:
-  netdatacache:
-```
-
-### Restrict access with basic auth
-
-You can restrict access by following [official caddy guide](https://caddyserver.com/docs/caddyfile/directives/basicauth#basicauth) and adding lines to
-Caddyfile.
+The default `/api/v1/info` check is usually sufficient. However, if the web server is disabled or API access is restricted, you'll need to customize the health check configuration.
 
 ## Publish a test image to your own repository
 
 At Netdata, we provide multiple ways of testing your Docker images using your own repositories.
-You may either use the command line tools available or take advantage of our GitHub Acions infrastructure.
+
+You may either use the command line tools available or take advantage of our GitHub Actions infrastructure.

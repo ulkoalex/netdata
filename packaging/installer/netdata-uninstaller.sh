@@ -1,15 +1,11 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # This is the netdata uninstaller script
 #
 # Variables needed by script and taken from '.environment' file:
 #  - NETDATA_PREFIX
 #  - NETDATA_ADDED_TO_GROUPS
-#
-# Copyright: SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Author: Paweł Krupa <paulfantom@gmail.com>
-# Author: Pavlos Emm. Katsoulakis <paul@netdata.cloud>
 #
 # Next unused error code: R0005
 
@@ -119,7 +115,7 @@ user_input() {
       case "$yn" in
          [Yy]*) return 0;;
          [Nn]*) return 1;;
-         *) echo "Please answer yes or no.";;
+         *) echo "Please answer y[es] or n[o]";;
        esac
      done
   fi
@@ -158,7 +154,7 @@ create_tmp_directory() {
     fi
   fi
 
-  mktemp -d -t netdata-kickstart-XXXXXXXXXX
+  mktemp -d -t netdata-uninstaller-XXXXXXXXXX
 }
 
 tmpdir="$(create_tmp_directory)"
@@ -456,6 +452,16 @@ portable_del_group() {
     fi
   fi
 
+  # DMS ( Synology )
+  if command -v synogroup 1> /dev/null 2>&1; then
+    if get_group "${groupname}" > /dev/null 2>&1; then
+      run synogroup --del "${groupname}" && return 0
+    else
+      info "Could not find group ${groupname}, nothing to do"
+      return 0
+    fi;
+  fi
+
   error "Group ${groupname} was not automatically removed, you might have to remove it manually"
   return 1
 }
@@ -467,16 +473,23 @@ issystemd() {
   ns=''
   systemctl=''
 
-  # if the directory /lib/systemd/system OR /usr/lib/systemd/system (SLES 12.x) does not exit, it is not systemd
-  if [ ! -d /lib/systemd/system ] && [ ! -d /usr/lib/systemd/system ]; then
-    return 1
-  fi
-
   # if there is no systemctl command, it is not systemd
   systemctl=$(command -v systemctl 2> /dev/null)
   if [ -z "${systemctl}" ] || [ ! -x "${systemctl}" ]; then
     return 1
   fi
+
+  # Check the output of systemctl is-system-running.
+  # If this reports 'offline', it’s not systemd. If it reports 'unknown'
+  # or nothing at all (which indicates the command is not supported), it
+  # may or may not be systemd, so continue to other checks. If it reports
+  # anything else, it is systemd.
+  case "$(systemctl is-system-running)" in
+    offline) return 1 ;;
+    unknown) : ;;
+    "") : ;;
+    *) return 0 ;;
+  esac
 
   # if pid 1 is systemd, it is systemd
   [ "$(basename "$(readlink /proc/1/exe)" 2> /dev/null)" = "systemd" ] && return 0
@@ -512,6 +525,11 @@ portable_del_user() {
     run sysadminctl -deleteUser "${username}" && return 0
   fi
 
+  # DMS ( Synology )
+  if command -v synouser 1> /dev/null 2>&1; then
+    run synouser --del "${username}" && return 0
+  fi
+
   error "User ${username} could not be deleted from system, you might have to remove it manually"
   return 1
 }
@@ -519,6 +537,15 @@ portable_del_user() {
 portable_del_user_from_group() {
   groupname="${1}"
   username="${2}"
+
+  if command -v getent > /dev/null 2>&1; then
+    getent group "${1:-""}" | grep -q "${2}"
+  else
+    grep "^${1}:" /etc/group | grep -q "${2}"
+  fi
+
+  ret=$?
+  [ "${ret}" != "0" ] && return 0
 
   # username is not in group
   info "Deleting ${username} user from ${groupname} group ..."
@@ -541,6 +568,17 @@ portable_del_user_from_group() {
   # mac OS
   if command -v dseditgroup 1> /dev/null 2>&1; then
     run dseditgroup -o delete -u "${username}" "${groupname}" && return 0
+  fi
+
+  # DSM ( Synology )
+  if command -v synogroup 1> /dev/null 2>&1; then
+    # Get current members of the group removing username
+    current_members_list=$(synogroup --get "${groupname}" | grep -v "\[${username}\]" | grep '^[0-9]' )
+    current_members=$(echo "${current_members_list}" | grep -oP '\[\K[^\]]+' | tr '\n' ' ' | sed 's/ $//')
+
+    # Set the new list of members
+    # shellcheck disable=SC2086
+    run synogroup --member "${groupname}" ${current_members} && return 0
   fi
 
   error "Failed to delete user ${username} from group ${groupname} !"
@@ -714,52 +752,83 @@ trap quit_msg EXIT
 info "Stopping a possibly running netdata..."
 stop_all_netdata
 
+if [ "$(uname -s)" = "Darwin" ]; then
+  launchctl unload /Library/LaunchDaemons/com.github.netdata.plist 2>/dev/null
+fi
+
 #### REMOVE NETDATA FILES
+
+# Handle updater files first so that it doesn’t try to run while we
+# are uninstalling things.
+if [ -x "${NETDATA_PREFIX}/usr/libexec/netdata-updater.sh" ]; then
+  "${NETDATA_PREFIX}/usr/libexec/netdata-updater.sh" --disable-auto-updates
+else
+  rm_file /etc/periodic/daily/netdata-updater
+  rm_file /etc/cron.daily/netdata-updater
+  rm_file /etc/cron.d/netdata-updater
+  rm_file /etc/cron.d/netdata-updater-daily
+fi
+
+if issystemd; then
+  for unit in netdata.service netdata-updater.timer; do
+    systemctl disable "${unit}"
+    systemctl stop "${unit}"
+  done
+
+  for unit in netdata.service netdata-updater.service netdata-updater.timer; do
+    unit_path="$(systemctl show -p FragmentPath "${unit}" | cut -f 2- -d '=')"
+    override_paths="$(systemctl show -p DropInPaths "${unit}" | cut -f 2- -d '=')"
+    for path in "${unit_path}" ${override_paths} ; do
+      rm_file "${path}"
+    done
+  done
+
+  rm_file /usr/lib/systemd/journald@netdata.conf.d/netdata.conf
+  rm_file /lib/systemd/journald@netdata.conf.d/netdata.conf
+  rm_dir /usr/lib/systemd/journald@netdata.conf.d/
+  rm_file /usr/lib/systemd/system-preset/50-netdata.preset
+  rm_file /lib/systemd/system-preset/50-netdata.preset
+
+  systemctl daemon-reload
+fi
+
 rm_file /etc/logrotate.d/netdata
-rm_file /etc/systemd/system/netdata.service
-rm_file /lib/systemd/system/netdata.service
-rm_file /usr/lib/systemd/system/netdata.service
-rm_file /etc/systemd/system/netdata-updater.service
-rm_file /lib/systemd/system/netdata-updater.service
-rm_file /usr/lib/systemd/system/netdata-updater.service
-rm_file /etc/systemd/system/netdata-updater.timer
-rm_file /lib/systemd/system/netdata-updater.timer
-rm_file /usr/lib/systemd/system/netdata-updater.timer
 rm_file /etc/init.d/netdata
-rm_file /etc/periodic/daily/netdata-updater
-rm_file /etc/cron.daily/netdata-updater
-rm_file /etc/cron.d/netdata-updater
+rm_file /Library/LaunchDaemons/com.github.netdata.plist
 
-
-if [ -n "${NETDATA_PREFIX}" ] && [ -d "${NETDATA_PREFIX}" ]; then
+if [ -n "${NETDATA_PREFIX}" ] && [ -d "${NETDATA_PREFIX}" ] && [ "netdata" = "$(basename "$NETDATA_PREFIX")" ] ; then
   rm_dir "${NETDATA_PREFIX}"
 else
-  rm_file "/usr/sbin/netdata"
-  rm_file "/usr/sbin/netdatacli"
+  rm_file "${NETDATA_PREFIX}/usr/sbin/netdata"
+  rm_file "${NETDATA_PREFIX}/usr/sbin/netdatacli"
+  rm_file "${NETDATA_PREFIX}/usr/sbin/netdata-claim.sh"
+  rm_file "${NETDATA_PREFIX}/usr/sbin/log2journal"
+  rm_file "${NETDATA_PREFIX}/usr/sbin/systemd-cat-native"
   rm_file "/tmp/netdata-ipc"
-  rm_file "/usr/sbin/netdata-claim.sh"
-  rm_dir "/usr/share/netdata"
-  rm_dir "/usr/libexec/netdata"
-  rm_dir "/var/lib/netdata"
-  rm_dir "/var/cache/netdata"
-  rm_dir "/var/log/netdata"
-  rm_dir "/etc/netdata"
+  rm_file "/tmp/netdata-service-cmds"
+  rm_dir "${NETDATA_PREFIX}/usr/share/netdata"
+  rm_dir "${NETDATA_PREFIX}/usr/libexec/netdata"
+  rm_dir "${NETDATA_PREFIX}/var/lib/netdata"
+  rm_dir "${NETDATA_PREFIX}/var/cache/netdata"
+  rm_dir "${NETDATA_PREFIX}/var/log/netdata"
+  rm_dir "${NETDATA_PREFIX}/etc/netdata"
+fi
+
+if [ -n "${tmpdir}" ]; then
+  run rm -rf "${tmpdir}" || true
 fi
 
 FILE_REMOVAL_STATUS=1
 
-#### REMOVE NETDATA USER FROM ADDED GROUPS
-if [ -n "$NETDATA_ADDED_TO_GROUPS" ]; then
+#### REMOVE USER
+if user_input "Do you want to delete 'netdata' system user ? "; then
+  portable_del_user "netdata" || :
+elif [ -n "$NETDATA_ADDED_TO_GROUPS" ]; then
   if user_input "Do you want to delete 'netdata' from following groups: '$NETDATA_ADDED_TO_GROUPS' ? "; then
     for group in $NETDATA_ADDED_TO_GROUPS; do
       portable_del_user_from_group "${group}" "netdata"
     done
   fi
-fi
-
-#### REMOVE USER
-if user_input "Do you want to delete 'netdata' system user ? "; then
-  portable_del_user "netdata" || :
 fi
 
 ### REMOVE GROUP

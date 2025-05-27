@@ -29,7 +29,7 @@ DUMP_CMDS=0
 ENABLE="auto"
 EXPORT_CMDS=0
 INSTALL=1
-LINUX_INIT_TYPES="systemd openrc lsb initd runit"
+LINUX_INIT_TYPES="systemd openrc lsb initd runit dinit"
 PLATFORM="$(uname -s)"
 SHOW_SVC_TYPE=0
 SVC_SOURCE="@libsysdir_POST@"
@@ -185,21 +185,26 @@ _check_systemd() {
   myns=''
   ns=''
 
-  # if the directory /lib/systemd/system OR /usr/lib/systemd/system (SLES 12.x) does not exit, it is not systemd
-  if [ ! -d /lib/systemd/system ] && [ ! -d /usr/lib/systemd/system ]; then
-    echo "NO" && return 0
-  fi
-
   # if there is no systemctl command, it is not systemd
   [ -z "$(command -v systemctl 2>/dev/null || true)" ] && echo "NO" && return 0
 
+  # Check the output of systemctl is-system-running.
+  #
+  # This may return a non-zero exit status in cases when it actually
+  # succeeded for our purposes, so we need to toggle set -e off here.
+  set +e
+  systemd_state="$(systemctl is-system-running)"
+  set -e
+
+  case "${systemd_state}" in
+    offline) echo "OFFLINE" && return 0 ;;
+    unknown) : ;;
+    "") : ;;
+    *) echo "YES" && return 0 ;;
+  esac
+
   # if pid 1 is systemd, it is systemd
   [ "$(basename "$(readlink /proc/1/exe)" 2> /dev/null)" = "systemd" ] && echo "YES" && return 0
-
-  # it ‘is’ systemd at this point, but systemd might not be running
-  # if not, return 2 to indicate ‘systemd, but not running’
-  pids=$(safe_pidof systemd 2> /dev/null)
-  [ -z "${pids}" ] && echo "OFFLINE" && return 0
 
   # check if the running systemd processes are not in our namespace
   myns="$(readlink /proc/self/ns/pid 2> /dev/null)"
@@ -210,8 +215,9 @@ _check_systemd() {
     [ -n "${myns}" ] && [ "${myns}" = "${ns}" ] && echo "YES" && return 0
   done
 
-  # else, it is not systemd
-  echo "NO"
+  # At this point, we know it’s a systemd system because systemctl
+  # exists, but systemd does not appear to be running, so indicate as such
+  echo "OFFLINE"
 }
 
 check_systemd() {
@@ -223,20 +229,33 @@ check_systemd() {
 }
 
 get_systemd_service_dir() {
-  if [ -w "/lib/systemd/system" ]; then
-    echo "/lib/systemd/system"
-  elif [ -w "/usr/lib/systemd/system" ]; then
-    echo "/usr/lib/systemd/system"
-  elif [ -w "/etc/systemd/system" ]; then
-    echo "/etc/systemd/system"
+  set +e
+  unit_paths="$(systemctl show -p UnitPath | cut -f 2- -d '=' | tr ' ' '\n')"
+  set -e
+
+  if [ -n "${unit_paths}" ]; then
+    lib_paths="$(echo "${unit_paths}" | grep -vE '^/(run|etc)' | awk '{line[NR] = $0} END {for (i = NR; i > 0; i--) print line[i]}')"
+    etc_paths="$(echo "${unit_paths}" | grep -E '^/etc' | grep -vE '(attached|control)$')"
   else
-    error "Unable to detect systemd service directory."
-    exit 4
+    lib_paths="/usr/lib/systemd/system /lib/systemd/system /usr/local/lib/systemd/system"
+    etc_paths="/etc/systemd/system"
   fi
+
+  for path in ${lib_paths} ${etc_paths}; do
+    if [ -d "${path}" ] && [ -w "${path}" ]; then
+      echo "${path}"
+      return 0
+    fi
+  done
+
+  error "Unable to detect usable systemd service directory."
+  exit 4
 }
 
 install_systemd_service() {
   SRCFILE="${SVC_SOURCE}/systemd/netdata.service"
+  PRESET_FILE="${SVC_SOURCE}/systemd/50-netdata.preset"
+  SVCDIR="$(get_systemd_service_dir)"
 
   if [ "$(systemctl --version | head -n 1 | cut -f 2 -d ' ')" -le 235 ]; then
     SRCFILE="${SVC_SOURCE}/systemd/netdata.service.v235"
@@ -255,18 +274,24 @@ install_systemd_service() {
   fi
 
   info "Installing systemd service..."
-  if ! install -p -m 0644 -o 0 -g 0 "${SRCFILE}" "$(get_systemd_service_dir)/netdata.service"; then
+  if ! install -p -m 0644 -o 0 -g 0 "${SRCFILE}" "${SVCDIR}/netdata.service"; then
     error "Failed to install systemd service file."
     exit 4
   fi
 
+  if [ -f "${PRESET_FILE}" ]; then
+    if ! install -p -m 0644 -o 0 -g 0 "${PRESET_FILE}" "${SVCDIR}-preset/50-netdata.preset"; then
+      warning "Failed to install netdata preset file."
+    fi
+  fi
+
   if [ "$(check_systemd)" = "YES" ]; then
     if ! systemctl daemon-reload; then
-        warning "Failed to reload systemd unit files."
+      warning "Failed to reload systemd unit files."
     fi
 
     if ! systemctl "${ENABLE}" netdata; then
-        warning "Failed to ${ENABLE} Netdata service."
+      warning "Failed to ${ENABLE} Netdata service."
     fi
   fi
 }
@@ -555,6 +580,65 @@ runit_cmds() {
 }
 
 # =====================================================================
+# dinit support functions
+
+_check_dinit() {
+  # if /etc/dinit.d does not exist, it’s not dinit
+  [ ! -d /etc/dinit.d ] && echo "NO" && return 0
+
+  # if PID 1 is dinit, it’s dinit
+  [ "$(basename "$(readlink /proc/1/exe)" 2> /dev/null)" = "dinit" ] && echo "YES" && return 0
+
+  # if /run/dinitctl exists and is a socket, it’s dinit
+  [ -S /run/dinitctl ] && echo "YES" && return 0
+
+  # if the dinitctl command exists despite getting to this point, it’s dinit, but not booted as such
+  [ -n "$(command -v dinitctl 2>/dev/null || true)" ] && echo "OFFLINE" && return 0
+
+  echo "NO" && return 0
+}
+
+check_dinit() {
+  if [ -z "${IS_DINIT}" ]; then
+    IS_DINIT="$(_check_dinit)"
+  fi
+
+  echo "${IS_DINIT}"
+}
+
+_run_dinitctl() {
+  opts=''
+
+  if [ "$(check_dinit)" = "OFFLINE" ]; then
+    opts="-o"
+  fi
+
+  # shellcheck disable=SC2086
+  dinitctl ${opts} "${@}"
+}
+
+enable_dinit() {
+  _run_dinitctl enable netdata
+}
+
+enable_dinit() {
+  _run_dinitctl disable netdata
+}
+
+install_dinit_service() {
+  install_generic_service dinit/netdata "dinit" /etc/dinit.d enable_dinit disable_dinit
+}
+
+dinit_cmds() {
+  if [ "$(check_dinit)" = "YES" ]; then
+    NETDATA_START_CMD='dinitctl start netdata'
+    NETDATA_STOP_CMD='dinitct stop netdata'
+  else # Not booted using dinit, use external defaults by not providing commands.
+    warning "Detected dinit, but the system is not booted using dinit. Unable to provide commands to start or stop Netdata using the service manager."
+  fi
+}
+
+# =====================================================================
 # WSL support functions
 
 _check_wsl() {
@@ -617,10 +701,12 @@ freebsd_cmds() {
 
 install_darwin_service() {
   info "Installing macOS plist file for launchd."
-  if ! install -C -S -p -m 0644 -o 0 -g 0 system/launchd/netdata.plist /Library/LaunchDaemons/com.github.netdata.plist; then
+  if ! install -C -S -p -m 0644 -o 0 -g 0 "${SVC_SOURCE}/launchd/netdata.plist" /Library/LaunchDaemons/com.github.netdata.plist; then
     error "Failed to copy plist file."
     exit 4
   fi
+
+  launchctl unload /Library/LaunchDaemons/com.github.netdata.plist 2>/dev/null
 
   if ! launchctl load /Library/LaunchDaemons/com.github.netdata.plist; then
     error "Failed to load plist file."

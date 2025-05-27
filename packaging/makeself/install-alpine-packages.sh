@@ -1,11 +1,8 @@
 #!/usr/bin/env sh
+# Copyright: SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Installation script for the alpine host
 # to prepare the static binary
-#
-# Copyright: SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Author: Paul Emm. Katsoulakis <paul@netdata.cloud>
 
 apk update || exit 1
 apk upgrade || exit 1
@@ -35,6 +32,7 @@ apk add --no-cache -U \
   lz4-static \
   make \
   ncurses \
+  ncurses-dev \
   netcat-openbsd \
   openssh \
   pkgconfig \
@@ -45,5 +43,5 @@ apk add --no-cache -U \
   wget \
   xz \
   zlib-dev \
-  zlib-static ||
-  exit 1
+  zlib-static \
+  || exit 1
